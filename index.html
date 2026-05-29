@@ -65,7 +65,7 @@
       </div>
       <!-- Image Upload (Base64) -->
       <div class="mb-5 sm:mb-8">
-        <label class="block text-sm font-medium text-[#1C1917] mb-2">产品图片 <span class="text-red-500">*</span><span class="text-[#78716C] font-normal ml-2">（最多 5 张）</span></label>
+        <label class="block text-sm font-medium text-[#1C1917] mb-2">产品图片 <span class="text-red-500">*</span><span class="text-[#78716C] font-normal ml-2">（至少1张，最多5张）</span></label>
         <div id="drop-zone" onclick="document.getElementById('file-input').click()" class="border-2 border-dashed rounded-xl p-5 sm:p-8 text-center cursor-pointer transition-all duration-200 border-gray-300 hover:border-orange-300 hover:bg-orange-50/50">
           <input id="file-input" type="file" accept="image/*" multiple class="hidden" onchange="handleFileSelect(event)" />
           <svg class="w-8 h-8 sm:w-10 sm:h-10 mx-auto mb-2 sm:mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -147,12 +147,12 @@
 <script>
 // ========== State ==========
 let currentPage = 'create';
-let uploadedFiles = [];
+let uploadedFiles = [];       // { dataUrl, preview, name }
 let currentRecord = null;
 let refineImageIndex = -1;
 let refineRefBase64 = null;
 let refineRefPreview = null;
-let refineHistories = {};
+let refineHistories = {};    // { imageIndex: [previousBase64, ...] }
 const MAX_FILES = 5;
 const API_BASE = window.location.origin;
 const imageLabels = ['首屏图', '卖点总览', '痛点对比', '功能细节', '信任背书', '行动引导'];
@@ -387,7 +387,7 @@ function updateGenerateBtn() {
   }
 }
 
-// ========== Generate (前端轮询版本) ==========
+// ========== Generate (支持参考图版本) ==========
 async function handleGenerate() {
   const productName = document.getElementById('product-name').value.trim();
   if (!productName || uploadedFiles.length === 0) return;
@@ -401,10 +401,11 @@ async function handleGenerate() {
   setProgress(0, '正在创建任务...');
 
   const recordId = crypto.randomUUID();
+  const refImages = uploadedFiles.map(f => f.dataUrl); // 获取 Base64 参考图
   const record = {
     id: recordId,
     productName,
-    inputImages: uploadedFiles.map(f => f.dataUrl),
+    inputImages: refImages,
     resultImages: [],
     createdAt: new Date().toISOString(),
     status: 'generating',
@@ -415,13 +416,13 @@ async function handleGenerate() {
     const totalImages = 6;
     const taskIds = new Array(totalImages).fill(null);
 
-    // 第一步：创建所有任务
+    // 第一步：创建所有任务，传入参考图
     for (let i = 0; i < totalImages; i++) {
       setProgress(Math.round((i / totalImages) * 50), `正在创建第 ${i + 1} 张图片任务...`);
       const res = await fetch(API_BASE + '/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productName, imageIndex: i }),
+        body: JSON.stringify({ productName, imageIndex: i, refImages }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -437,30 +438,25 @@ async function handleGenerate() {
 
     while (finishedCount < totalImages) {
       for (let i = 0; i < totalImages; i++) {
-        if (results[i]) continue; // 已经完成
-
+        if (results[i]) continue;
         const res = await fetch(`${API_BASE}/api/query?taskId=${taskIds[i]}`);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `查询第 ${i + 1} 个任务失败`);
         }
         const data = await res.json();
-
         if (data.status === 'SUCCEEDED') {
           results[i] = data.imageUrl;
           finishedCount++;
-          // 实时更新历史记录
           await updateHistoryRecord(recordId, { resultImages: [...results.filter(Boolean)] });
         } else if (data.status === 'FAILED') {
           throw new Error(`第 ${i + 1} 张图片生成失败`);
         }
-        // 如果还在 PENDING，继续等待
       }
-      // 更新进度
       if (finishedCount < totalImages) {
         const progress = 50 + Math.round((finishedCount / totalImages) * 50);
         setProgress(progress, `正在生成图片 (${finishedCount}/${totalImages})...`);
-        await new Promise(r => setTimeout(r, 2000)); // 等待 2 秒再轮询
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
 
@@ -470,7 +466,7 @@ async function handleGenerate() {
 
     setProgress(100, '生成完成！');
 
-    // Reset 创建页面
+    // Reset 页面
     uploadedFiles = [];
     document.getElementById('product-name').value = '';
     renderPreviewGrid();
