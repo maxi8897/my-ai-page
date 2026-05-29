@@ -1,4 +1,8 @@
 // api/generate.js
+export const config = {
+  runtime: 'edge',   // 启用 Edge Functions，超时 30 秒，并支持并发
+};
+
 export default async function handler(req) {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: '只支持 POST 请求' }), {
@@ -11,7 +15,6 @@ export default async function handler(req) {
     const { productName } = await req.json();
     if (!productName) throw new Error('缺少产品名称');
 
-    // 六张图的场景描述
     const prompts = [
       `${productName}，干净的白底展示图，专业产品摄影，柔和光线`,
       `${productName}，多角度卖点展示，功能标签可视化，电商风格`,
@@ -22,9 +25,9 @@ export default async function handler(req) {
     ];
 
     const apiKey = process.env.DASHSCOPE_API_KEY;
-    const results = [];
 
-    for (let i = 0; i < prompts.length; i++) {
+    // 并发请求所有图片生成，缩短总耗时
+    const imagePromises = prompts.map(async (prompt) => {
       const aliRes = await fetch(
         'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis',
         {
@@ -35,7 +38,7 @@ export default async function handler(req) {
           },
           body: JSON.stringify({
             model: 'wanx-v1',
-            input: { prompt: prompts[i] },
+            input: { prompt },
             parameters: { size: '1024*1024', n: 1 },
           }),
         }
@@ -44,10 +47,10 @@ export default async function handler(req) {
       const aliData = await aliRes.json();
       const tempUrl = aliData.output?.results?.[0]?.url;
       if (!tempUrl) {
-        throw new Error(`第 ${i + 1} 张图生成失败：${aliData.message || '未知错误'}`);
+        throw new Error(`图片生成失败：${aliData.message || '未知错误'}`);
       }
 
-      // 下载并转 Base64
+      // 下载临时图片并转为 Base64
       const imageRes = await fetch(tempUrl);
       const arrayBuffer = await imageRes.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
@@ -55,11 +58,10 @@ export default async function handler(req) {
       bytes.forEach(b => (binary += String.fromCharCode(b)));
       const base64 = btoa(binary);
       const mime = imageRes.headers.get('content-type') || 'image/png';
-      results.push(`data:${mime};base64,${base64}`);
+      return `data:${mime};base64,${base64}`;
+    });
 
-      // 避免并发过高，稍作等待
-      await new Promise(r => setTimeout(r, 1500));
-    }
+    const results = await Promise.all(imagePromises);
 
     return new Response(
       JSON.stringify({ imageUrls: results }),
