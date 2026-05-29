@@ -32,14 +32,16 @@ export default async function handler(req) {
     const apiKey = process.env.DASHSCOPE_API_KEY;
     if (!apiKey) throw new Error('环境变量 DASHSCOPE_API_KEY 未设置');
 
-    // 调用通义万象 API
-    const aliRes = await fetch(
+    // 步骤 1: 创建异步任务，获取 task_id
+    console.log('正在创建异步任务...');
+    const createRes = await fetch(
       'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
+          'X-DashScope-Async': 'enable', // 关键！启用异步调用
         },
         body: JSON.stringify({
           model: 'wanx-v1',
@@ -49,27 +51,57 @@ export default async function handler(req) {
       }
     );
 
-    const aliData = await aliRes.json();
+    const createData = await createRes.json();
+    if (createData.code) {
+      throw new Error(`创建任务失败：${createData.message}`);
+    }
+    
+    const taskId = createData.output?.task_id;
+    if (!taskId) {
+      throw new Error('未获取到 task_id');
+    }
+    console.log(`异步任务已创建，task_id: ${taskId}`);
 
-    // 检查阿里云返回的错误
-    if (!aliRes.ok || aliData.code) {
-      const errorMsg = aliData.message || aliData.code || '未知阿里云错误';
-      throw new Error(`阿里云API错误：${errorMsg}`);
+    // 步骤 2: 轮询查询任务结果（最多尝试 15 次，每次间隔 2 秒）
+    let imageUrl = null;
+    for (let i = 0; i < 15; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 等待 2 秒
+      
+      console.log(`第 ${i + 1} 次查询任务状态...`);
+      const queryRes = await fetch(
+        `https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        }
+      );
+      
+      const queryData = await queryRes.json();
+      const taskStatus = queryData.output?.task_status;
+      console.log(`任务状态：${taskStatus}`);
+      
+      if (taskStatus === 'SUCCEEDED') {
+        const results = queryData.output.results;
+        if (results && results.length > 0) {
+          imageUrl = results[0].url;
+          break; // 成功获取到图片 URL，退出轮询
+        }
+      } else if (taskStatus === 'FAILED') {
+        throw new Error(`任务执行失败：${queryData.output.message || '未知错误'}`);
+      } else if (taskStatus === 'CANCELED' || taskStatus === 'UNKNOWN') {
+        throw new Error(`任务状态异常：${taskStatus}`);
+      }
+      // 如果是 PENDING 或 RUNNING，继续轮询
     }
 
-    const tempUrl = aliData.output?.results?.[0]?.url;
-    if (!tempUrl) {
-      throw new Error(`阿里云返回成功但缺少图片URL：${JSON.stringify(aliData)}`);
+    if (!imageUrl) {
+      throw new Error('轮询超时，未能获取到图片');
     }
 
-    // 下载图片并转为 Base64
-    const imageRes = await fetch(tempUrl, {
-      headers: { 'User-Agent': 'Vercel-Edge-Function' }, // 避免被 OSS 拦截
-    });
-    if (!imageRes.ok) {
-      throw new Error(`下载图片失败，HTTP状态码：${imageRes.status}`);
-    }
-
+    // 步骤 3: 下载图片并转为 Base64（和之前一样）
+    console.log('正在下载图片...');
+    const imageRes = await fetch(imageUrl);
     const arrayBuffer = await imageRes.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     let binary = '';
