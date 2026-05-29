@@ -16,10 +16,9 @@ export default async function handler(req) {
     const apiKey = process.env.DASHSCOPE_API_KEY;
     if (!apiKey) throw new Error('环境变量 DASHSCOPE_API_KEY 未设置');
 
-    // 只使用第一张图作为分析对象（节省 token）
-    const primaryImage = refImages[0]; // data:image/... Base64
+    // 取第一张压缩后的图片
+    const primaryImage = refImages[0];
 
-    // 给视觉模型的指令：分析图片，生成6个详情页提示词
     const systemPrompt = `你是一名电商详情页设计师，请仔细观察商品图片中的产品外观、材质、颜色、风格、可能的使用场景。根据产品名称“${productName}”和图片内容，生成6张独立电商详情页图片的AI绘画提示词。
 每张图片的要求：
 - 第1张：首屏主图，展示产品整体，背景干净柔和，突出视觉冲击，底部有“立即抢购”按钮，主标题简短吸引人。
@@ -32,7 +31,7 @@ export default async function handler(req) {
 通用要求：所有图片统一尺寸为“宽790px，9:16比例，2K分辨率”，风格温馨、商业摄影级光线，阿里巴巴普惠体文字，无品牌LOGO，右下角放置暖橙盾牌+白色对勾图标。
 请直接输出一个JSON数组，包含6个字符串，分别对应第1-6张图片的完整提示词。只输出JSON数组，不要任何解释。`;
 
-    // 调用 qwen-vl-max 视觉模型（同步请求，快速返回）
+    // 调用 qwen-vl-max 视觉模型
     const visionRes = await fetch(
       'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
       {
@@ -68,35 +67,26 @@ export default async function handler(req) {
       throw new Error('视觉模型返回空，完整响应：' + JSON.stringify(visionData));
     }
 
-    // 清理可能的 markdown 代码块
+    // 解析 JSON 数组
     let cleanText = fullResponse
       .replace(/```json\s*/g, '')
       .replace(/```\s*/g, '')
       .trim();
-
-    // 尝试提取 JSON 数组
     let prompts = [];
     try {
       prompts = JSON.parse(cleanText);
     } catch {
-      // 如果直接解析失败，用正则提取第一个数组
       const match = cleanText.match(/\[([\s\S]*?)\]/);
-      if (match) {
-        prompts = JSON.parse(match[0]);
-      } else {
-        throw new Error('无法从视觉模型返回中提取提示词数组');
-      }
+      if (match) prompts = JSON.parse(match[0]);
+      else throw new Error('无法解析视觉模型返回的提示词');
     }
 
     if (!Array.isArray(prompts) || prompts.length < 6) {
-      throw new Error('视觉模型返回的提示词不足6条，实际：' + JSON.stringify(prompts));
+      throw new Error('视觉模型返回的提示词不足6条');
     }
 
-    // 确保正好6条
-    prompts = prompts.slice(0, 6);
-
     return new Response(
-      JSON.stringify({ prompts }),
+      JSON.stringify({ prompts: prompts.slice(0, 6) }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
   } catch (error) {
