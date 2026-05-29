@@ -16,6 +16,7 @@
       },
     };
   </script>
+  <link rel="manifest" href="manifest.json" />
   <style>
     html { scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
     body { -webkit-tap-highlight-color: transparent; }
@@ -62,7 +63,7 @@
         <label class="block text-sm font-medium text-[#1C1917] mb-2">产品名称 <span class="text-red-500">*</span></label>
         <input id="product-name" type="text" placeholder="例如：婴儿辅食碗、蓝牙耳机、保温杯..." class="w-full h-11 sm:h-12 px-4 text-base rounded-xl border border-[#E7E5E4] bg-white focus:outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400" />
       </div>
-      <!-- Image Upload (转换为 Base64) -->
+      <!-- Image Upload (Base64) -->
       <div class="mb-5 sm:mb-8">
         <label class="block text-sm font-medium text-[#1C1917] mb-2">产品图片 <span class="text-red-500">*</span><span class="text-[#78716C] font-normal ml-2">（最多 5 张）</span></label>
         <div id="drop-zone" onclick="document.getElementById('file-input').click()" class="border-2 border-dashed rounded-xl p-5 sm:p-8 text-center cursor-pointer transition-all duration-200 border-gray-300 hover:border-orange-300 hover:bg-orange-50/50">
@@ -146,17 +147,17 @@
 <script>
 // ========== State ==========
 let currentPage = 'create';
-let uploadedFiles = [];       // { dataUrl, preview, name }
+let uploadedFiles = [];
 let currentRecord = null;
 let refineImageIndex = -1;
 let refineRefBase64 = null;
 let refineRefPreview = null;
-let refineHistories = {};    // { imageIndex: [previousBase64, ...] }
+let refineHistories = {};
 const MAX_FILES = 5;
 const API_BASE = window.location.origin;
 const imageLabels = ['首屏图', '卖点总览', '痛点对比', '功能细节', '信任背书', '行动引导'];
 
-// ========== IndexedDB Setup (替代 localStorage 存历史/收藏) ==========
+// ========== IndexedDB ==========
 const DB_NAME = 'productGenDB';
 const DB_VERSION = 1;
 let db = null;
@@ -181,7 +182,6 @@ function openDB() {
   });
 }
 
-// 历史记录操作
 function getHistory() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('history', 'readonly');
@@ -235,7 +235,6 @@ function deleteHistoryRecord(id) {
   });
 }
 
-// 收藏操作
 function getFavorites() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('favorites', 'readonly');
@@ -330,7 +329,7 @@ function showToast(msg) {
   toastTimer = setTimeout(() => { t.classList.add('opacity-0', '-translate-y-4'); t.classList.remove('opacity-100', 'translate-y-0'); }, 2500);
 }
 
-// ========== File Upload (转换为 Base64) ==========
+// ========== File Upload (Base64) ==========
 function handleFileSelect(event) {
   const files = Array.from(event.target.files).filter(f => f.type.startsWith('image/'));
   const remaining = MAX_FILES - uploadedFiles.length;
@@ -338,7 +337,7 @@ function handleFileSelect(event) {
   toAdd.forEach(file => {
     const reader = new FileReader();
     reader.onload = function(e) {
-      const base64 = e.target.result; // data:image/xxx;base64,...
+      const base64 = e.target.result;
       uploadedFiles.push({
         dataUrl: base64,
         preview: base64,
@@ -388,7 +387,7 @@ function updateGenerateBtn() {
   }
 }
 
-// ========== Generate ==========
+// ========== Generate (每次一张图，循环6次) ==========
 async function handleGenerate() {
   const productName = document.getElementById('product-name').value.trim();
   if (!productName || uploadedFiles.length === 0) return;
@@ -399,46 +398,48 @@ async function handleGenerate() {
 
   const progressSection = document.getElementById('progress-section');
   progressSection.classList.remove('hidden');
-  setProgress(10, '正在分析产品图片...');
+  setProgress(0, '正在生成第 1 张商品图...');
 
   const recordId = crypto.randomUUID();
   const record = {
     id: recordId,
     productName,
-    inputImages: uploadedFiles.map(f => f.dataUrl), // 存 Base64
+    inputImages: uploadedFiles.map(f => f.dataUrl),
     resultImages: [],
     createdAt: new Date().toISOString(),
     status: 'generating',
   };
   await addHistoryRecord(record);
 
-  const progressInterval = setInterval(() => {
-    const cur = parseFloat(document.getElementById('progress-bar').style.width);
-    if (cur < 85) setProgress(cur + 2, 'AI 正在生成商品图...');
-  }, 1000);
-
   try {
-    setProgress(25, '正在生成商品图设计方案...');
-    const res = await fetch(API_BASE + '/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        productName,
-        images: uploadedFiles.map(f => f.dataUrl) // 发送 Base64 数组
-      }),
-    });
-    clearInterval(progressInterval);
-    if (!res.ok) throw new Error('生成失败');
-    const data = await res.json();
-    // data.imageUrls 应为 Base64 数组
-    if (!data.imageUrls || !Array.isArray(data.imageUrls)) throw new Error('返回数据格式错误');
+    const totalImages = 6;
+    for (let i = 0; i < totalImages; i++) {
+      setProgress(Math.round(((i) / totalImages) * 100), `正在生成第 ${i + 1} 张商品图...`);
 
-    setProgress(100, '生成完成!');
-    await updateHistoryRecord(recordId, { resultImages: data.imageUrls, status: 'completed' });
-    record.resultImages = data.imageUrls;
+      const res = await fetch(API_BASE + '/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productName, imageIndex: i }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `第 ${i + 1} 张图生成失败`);
+      }
+      const data = await res.json();
+      if (data.imageUrl) {
+        record.resultImages.push(data.imageUrl);
+        // 实时更新数据库
+        await updateHistoryRecord(recordId, { resultImages: [...record.resultImages] });
+      } else {
+        throw new Error(`第 ${i + 1} 张图返回无效`);
+      }
+    }
+
+    setProgress(100, '生成完成！');
+    await updateHistoryRecord(recordId, { resultImages: record.resultImages, status: 'completed' });
     record.status = 'completed';
 
-    // Reset create page
+    // Reset
     uploadedFiles = [];
     document.getElementById('product-name').value = '';
     renderPreviewGrid();
@@ -448,10 +449,9 @@ async function handleGenerate() {
     btn.innerHTML = '<svg class="w-5 h-5 inline mr-2 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>生成商品图';
     setTimeout(() => { navigate('result', record); }, 500);
   } catch (error) {
-    clearInterval(progressInterval);
     console.error('Generation error:', error);
     await updateHistoryRecord(recordId, { status: 'failed' });
-    setProgress(0, '生成失败，请重试');
+    setProgress(0, '生成失败：' + error.message);
     btn.disabled = false;
     btn.innerHTML = '<svg class="w-5 h-5 inline mr-2 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>生成商品图';
     progressSection.classList.add('hidden');
@@ -465,7 +465,7 @@ function setProgress(value, label) {
   if (label) document.getElementById('progress-label').textContent = label;
 }
 
-// ========== Result Page (使用 Base64 展示) ==========
+// ========== Result Page ==========
 async function renderResultPage() {
   if (!currentRecord) return;
   const container = document.getElementById('page-result');
@@ -490,7 +490,7 @@ async function renderResultPage() {
   html += `<div class="space-y-4 sm:space-y-6">`;
   const favs = await getFavorites();
   for (let index = 0; index < r.resultImages.length; index++) {
-    const url = r.resultImages[index]; // Base64
+    const url = r.resultImages[index];
     const fav = favs.some(f => f.imageUrl === url);
     const refCount = (refineHistories[index] || []).length;
     html += `<div class="bg-white rounded-2xl overflow-hidden border border-[#E7E5E4] shadow-sm">
@@ -516,7 +516,7 @@ async function renderResultPage() {
   container.innerHTML = html;
 }
 
-// ========== Download (Base64 -> Blob) ==========
+// ========== Download ==========
 function downloadBase64(base64DataUrl, filename) {
   const link = document.createElement('a');
   link.href = base64DataUrl;
@@ -542,9 +542,9 @@ async function handleDownloadAll() {
   }
 }
 
-// ========== Favorite (使用 IndexedDB) ==========
+// ========== Favorite ==========
 async function toggleFavorite(encodedUrl, index) {
-  const imageUrl = decodeURIComponent(encodedUrl); // base64
+  const imageUrl = decodeURIComponent(encodedUrl);
   const favs = await getFavorites();
   const existing = favs.find(f => f.imageUrl === imageUrl);
   if (existing) {
@@ -620,15 +620,15 @@ async function handleRefine() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        imageUrl: currentBase64,      // Base64 原图
+        imageUrl: currentBase64,
         userPrompt,
-        referenceImageUrl: refineRefBase64, // 可选参考图 Base64
+        referenceImageUrl: refineRefBase64,
         productName: currentRecord.productName,
       }),
     });
     if (!res.ok) throw new Error('调试失败');
     const data = await res.json();
-    if (data.imageUrl) { // 返回 Base64
+    if (data.imageUrl) {
       if (!refineHistories[refineImageIndex]) refineHistories[refineImageIndex] = [];
       refineHistories[refineImageIndex].push(currentBase64);
       currentRecord.resultImages[refineImageIndex] = data.imageUrl;
@@ -767,7 +767,7 @@ openDB().then(() => {
   renderNav();
 });
 
-// Drag and drop
+// Drag & drop
 const dropZone = document.getElementById('drop-zone');
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('border-orange-400', 'bg-orange-50'); dropZone.classList.remove('border-gray-300'); });
 dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('border-orange-400', 'bg-orange-50'); dropZone.classList.add('border-gray-300'); });
@@ -792,6 +792,13 @@ dropZone.addEventListener('drop', e => {
     reader.readAsDataURL(file);
   });
 });
+
+// PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js');
+  });
+}
 </script>
 </body>
 </html>
